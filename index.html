@@ -597,6 +597,8 @@
                 setCurrentUser({ username: 'demo' });
                 setData(seedProjects);
               }
+              // ensure loading spinner clears in demo mode
+              setLoading(false);
               return;
             }
             // try get me
