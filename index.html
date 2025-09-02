@@ -20,7 +20,7 @@
   <!-- jsPDF (for real PDF export) -->
   <script src="https://cdn.jsdelivr.net/npm/jspdf@2.5.1/dist/jspdf.umd.min.js"></script>
 
-  <script>window.ADMIN_REQUEST_EMAIL="almirveseli@gmail.com";</script>`n  <script type="text/babel" data-presets="env,react">
+  <script type="text/babel" data-presets="env,react">
     const { useState, useMemo, useEffect } = React;
 
     // ---------- Helpers ----------
@@ -317,6 +317,7 @@
       const [confirm, setConfirm] = useState("");
       const [err, setErr] = useState("");
       const [info, setInfo] = useState("");
+      const [verifyUrl, setVerifyUrl] = useState("");
       async function handle(e){
         e.preventDefault(); setErr("");
         const username = user.trim();
@@ -328,7 +329,12 @@
         try {
           const resp = await api('/signup', { method:'POST', body:{ username, email: em, password: pass }, auth:false });
           // Do not auto-login. Require email verification first.
-          setInfo('Check your email for a verification link.');
+          if (resp && resp.verify && resp.verify.url) {
+            setVerifyUrl(resp.verify.url);
+            setInfo('Verification link generated below (dev mode).');
+          } else {
+            setInfo('Check your email for a verification link.');
+          }
         } catch(ex) {
           setErr(ex.message || 'Signup failed');
         }
@@ -353,6 +359,11 @@
           </div>
           {err && <div className="text-sm text-rose-600">{err}</div>}
           {info && <div className="text-sm text-slate-600">{info}</div>}
+          {verifyUrl && (
+            <div className="text-sm">
+              <a className="text-indigo-600 hover:underline" href={verifyUrl} target="_blank" rel="noreferrer">Open verification link</a>
+            </div>
+          )}
           <div className="flex justify-end">
             <button type="submit" className="rounded-xl bg-indigo-600 px-4 py-2 text-sm font-medium text-white hover:bg-indigo-500">Create Account</button>
           </div>
@@ -364,6 +375,7 @@
       const [email, setEmail] = useState("");
       const [err, setErr] = useState("");
       const [ok, setOk] = useState("");
+      const [dev, setDev] = useState({ verifyUrl: "", username: "", password: "" });
       async function submit(e) {
         e.preventDefault(); setErr(""); setOk("");
         const em = email.trim();
@@ -380,7 +392,10 @@
             }
             return;
           }
-          await api('/request-access', { method:'POST', body:{ email: em }, auth:false });
+          const resp = await api('/request-access', { method:'POST', body:{ email: em }, auth:false });
+          if (resp && resp.credentials) {
+            setDev({ verifyUrl: resp?.verify?.url || '', username: resp.credentials.username, password: resp.credentials.password });
+          }
           setOk('If eligible, credentials and a verification link have been emailed.');
         } catch (ex) {
           setErr(ex.message || 'Failed to request access');
@@ -395,6 +410,14 @@
             </div>
             {err && <div className="text-sm text-rose-600">{err}</div>}
             {ok && <div className="text-sm text-emerald-700">{ok}</div>}
+            {dev.username && (
+              <div className="text-xs rounded-lg bg-slate-50 p-2 border border-slate-200">
+                <div>Dev credentials (local only):</div>
+                <div>Username: <code>{dev.username}</code></div>
+                <div>Password: <code>{dev.password}</code></div>
+                {dev.verifyUrl && <div><a className="text-indigo-600 hover:underline" href={dev.verifyUrl} target="_blank" rel="noreferrer">Open verification link</a></div>}
+              </div>
+            )}
             <div className="flex justify-end gap-2">
               <button type="button" onClick={onClose} className="rounded-xl px-4 py-2 text-sm ring-1 ring-slate-300 text-slate-700">Cancel</button>
               <button type="submit" className="rounded-xl bg-slate-900 px-4 py-2 text-sm text-white">Send request</button>
@@ -801,5 +824,4 @@
   </script>
 </body>
 </html>
-
 
