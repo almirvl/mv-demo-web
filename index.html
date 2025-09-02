@@ -1,0 +1,725 @@
+<!doctype html>
+<html>
+<head>
+  <meta charset="utf-8" />
+  <meta name="viewport" content="width=device-width,initial-scale=1" />
+  <title>Marketing Vault (Prototype)</title>
+  <script src="https://cdn.tailwindcss.com"></script>
+  <style>
+    /* Ensure proper font rendering for special symbols */
+    html { font-feature-settings: "tnum" 0; }
+  </style>
+</head>
+<body class="bg-slate-50">
+  <div id="root"></div>
+
+  <!-- React UMD + Babel -->
+  <script src="https://unpkg.com/react@18/umd/react.development.js"></script>
+  <script src="https://unpkg.com/react-dom@18/umd/react-dom.development.js"></script>
+  <script src="https://unpkg.com/@babel/standalone/babel.min.js"></script>
+  <!-- jsPDF (for real PDF export) -->
+  <script src="https://cdn.jsdelivr.net/npm/jspdf@2.5.1/dist/jspdf.umd.min.js"></script>
+
+  <script type="text/babel" data-presets="env,react">
+    const { useState, useMemo, useEffect } = React;
+
+    // ---------- Helpers ----------
+    const currencies = {
+      EUR: { symbol: "\u20AC", rate: 1 },
+      USD: { symbol: "$", rate: 1.09 },
+      GBP: { symbol: "\u00A3", rate: 0.85 },
+      AED: { symbol: "AED", rate: 4.0 },
+    };
+    const fmtMoney = (eur, ccy) => {
+      const r = currencies[ccy]?.rate ?? 1, sym = currencies[ccy]?.symbol ?? "\u20AC";
+      return `${sym} ${(eur*r).toLocaleString(undefined,{maximumFractionDigits:0})}`;
+    };
+    const unitTotalPriceEUR = (u) => (u.area_m2||0) * (u.price_per_m2_eur||0);
+
+    const slugify = (s) => (s||"")
+      .toLowerCase()
+      .trim()
+      .replace(/[^\w\s-]/g, "")
+      .replace(/\s+/g, "-")
+      .replace(/-+/g, "-");
+
+    const defaultMaterials = () => ({
+      Brochures: [], Renders: [], "Floor Plans": [], Videos: [], "Payment Plans": []
+    });
+
+    // Backend wiring
+    // Demo mode automatically enables on GitHub Pages or with ?demo=1
+    const IS_DEMO = (() => {
+      try {
+        const host = String(window.location.hostname||'');
+        if (host.endsWith('.github.io')) return true;
+        const qs = new URLSearchParams(window.location.search);
+        if (qs.has('demo')) return true;
+      } catch {}
+      return false;
+    })();
+    // Allow overriding via window.API_BASE before this script executes
+    const API_BASE = IS_DEMO ? null : (window.API_BASE || 'http://localhost:3000/api');
+    const TOKEN_KEY = 'mv.token';
+    const getToken = () => { try { return localStorage.getItem(TOKEN_KEY); } catch(_) { return null; } };
+    const setToken = (t) => { try { t? localStorage.setItem(TOKEN_KEY, t) : localStorage.removeItem(TOKEN_KEY); } catch(_) {} };
+    const clearToken = () => { try { localStorage.removeItem(TOKEN_KEY); } catch(_) {} };
+
+    async function api(path, { method='GET', body, headers={}, auth=true } = {}) {
+      if (!API_BASE) throw new Error('API disabled in demo mode');
+      const token = getToken();
+      const finalHeaders = { ...headers };
+      let payload = undefined;
+      if (body !== undefined) {
+        finalHeaders['Content-Type'] = 'application/json';
+        payload = JSON.stringify(body);
+      }
+      if (auth && token) finalHeaders['Authorization'] = `Bearer ${token}`;
+      const res = await fetch(`${API_BASE}${path}`, { method, headers: finalHeaders, body: payload });
+      const text = await res.text();
+      let data = null; try { data = text ? JSON.parse(text) : null; } catch { data = null; }
+      if (!res.ok) {
+        const msg = (data && (data.error || data.message)) || `HTTP ${res.status}`;
+        throw new Error(msg);
+      }
+      return data;
+    }
+
+    const ACCEPT = {
+      Brochures: "application/pdf",
+      Renders: "image/*",
+      "Floor Plans": "image/*,application/pdf",
+      Videos: "video/*",
+      "Payment Plans": "application/pdf",
+    };
+    const fileType = (f) => f.type?.includes("pdf") ? "pdf" :
+                            f.type?.startsWith("image/") ? "image" :
+                            f.type?.startsWith("video/") ? "video" : "file";
+
+    // ---------- Seed Data ----------
+    const seedProjects = [
+      {
+        id: "hit-imperial",
+        name: "Hit Imperial \u2013 Prishtina e Re",
+        location: "Prishtin\u00EB, Kosovo",
+        cover: "https://images.unsplash.com/photo-1501183638710-841dd1904471?q=80&w=1200&auto=format&fit=crop",
+        tags: ["Residential","New Launch"],
+        materials: { Brochures: [], Renders: [{name:"Exterior Render", type:"image", url:"#"}],
+          "Floor Plans":[{name:"L5\u2013K11 \u2013 Type E/N52 \u2013 108.90 m\u00B2 (+ Green Terrace 27.40 m\u00B2)", type:"image", url:"#"}],
+          Videos:[], "Payment Plans":[] },
+        units: [{
+          id:"L5\u2013K11 (Type E/N52)", bedrooms:2, area_m2:108.9, terraces_m2:10, green_terrace_m2:27.4,
+          price_per_m2_eur:1300, view:"", floor:5, parking:1, status:"Off-plan", acd:"TBC",
+        }],
+      },
+      {
+        id: "sofalia-hills",
+        name: "Sofalia Hills",
+        location: "Prishtin\u00EB, Kosovo",
+        cover: "https://images.unsplash.com/photo-1459535653751-d571815e906b?q=80&w=1200&auto=format&fit=crop",
+        tags: ["Villas","Ready"],
+        materials: { Brochures: [], Renders:[{name:"Exterior Render", type:"image", url:"#"}],
+          "Floor Plans":[{name:"Tipi D \u2013 Gross 273.34 m\u00B2 (Plot 414.6 m\u00B2)", type:"image", url:"#"}],
+          Videos:[], "Payment Plans":[] },
+        units: [{
+          id:"Tipi D", bedrooms:"-", area_m2:273.34, plot_m2:414.6, floors:"B+P+1",
+          price_per_m2_eur:1400, view:"", floor:0, parking:2, status:"Ready", acd:"Ready",
+        }],
+      },
+    ];
+
+    // ---------- UI ----------
+    const Chip = ({children}) =>
+      <span className="inline-flex items-center rounded-full bg-indigo-50 px-3 py-1 text-xs font-medium text-indigo-700 ring-1 ring-indigo-200">{children}</span>;
+
+    const Card = ({children, className=""}) =>
+      <div className={`rounded-2xl bg-white shadow-sm ring-1 ring-slate-200 ${className}`}>{children}</div>;
+
+    function Modal({ open, onClose, title, children }) {
+      if (!open) return null;
+      return (
+        <div className="fixed inset-0 z-50 flex items-center justify-center">
+          <div className="absolute inset-0 bg-black/30" onClick={onClose}></div>
+          <div className="relative w-full max-w-xl rounded-2xl bg-white p-5 shadow-xl">
+            <div className="mb-3 flex items-center justify-between">
+              <h3 className="text-lg font-semibold text-slate-900">{title}</h3>
+              <button onClick={onClose} className="text-slate-500 hover:text-slate-700">✕</button>
+            </div>
+            {children}
+          </div>
+        </div>
+      );
+    }
+
+    function ProjectForm({ onSubmit, onCancel }) {
+      const [name, setName] = useState("");
+      const [location, setLocation] = useState("");
+      const [cover, setCover] = useState("https://images.unsplash.com/photo-1501183638710-841dd1904471?q=80&w=1200&auto=format&fit=crop");
+      const [tags, setTags] = useState("");
+
+      function handleSubmit(e){
+        e.preventDefault();
+        const n = name.trim();
+        if (!n) return;
+        onSubmit({
+          name: n,
+          location: location.trim(),
+          cover: cover.trim(),
+          tags: tags.split(',').map(t=>t.trim()).filter(Boolean)
+        });
+      }
+
+      return (
+        <form onSubmit={handleSubmit} className="space-y-4">
+          <div>
+            <label className="block text-sm text-slate-700 mb-1">Name</label>
+            <input value={name} onChange={(e)=>setName(e.target.value)} required
+                   className="w-full rounded-xl border border-slate-300 px-3 py-2 text-sm" placeholder="Project name" />
+          </div>
+          <div>
+            <label className="block text-sm text-slate-700 mb-1">Location</label>
+            <input value={location} onChange={(e)=>setLocation(e.target.value)}
+                   className="w-full rounded-xl border border-slate-300 px-3 py-2 text-sm" placeholder="City, Country" />
+          </div>
+          <div>
+            <label className="block text-sm text-slate-700 mb-1">Cover URL</label>
+            <input value={cover} onChange={(e)=>setCover(e.target.value)}
+                   className="w-full rounded-xl border border-slate-300 px-3 py-2 text-sm" placeholder="https://..." />
+          </div>
+          <div>
+            <label className="block text-sm text-slate-700 mb-1">Tags (comma separated)</label>
+            <input value={tags} onChange={(e)=>setTags(e.target.value)}
+                   className="w-full rounded-xl border border-slate-300 px-3 py-2 text-sm" placeholder="Residential, New Launch" />
+          </div>
+          <div className="flex items-center justify-end gap-2 pt-2">
+            <button type="button" onClick={onCancel} className="rounded-xl px-4 py-2 text-sm ring-1 ring-slate-300 text-slate-700">Cancel</button>
+            <button type="submit" className="rounded-xl bg-slate-900 px-4 py-2 text-sm text-white">Add Project</button>
+          </div>
+        </form>
+      );
+    }
+
+    function Toolbar({ value, onChange }) {
+      return (
+        <div className="flex flex-wrap items-center gap-3">
+          <input
+            className="w-full md:w-72 rounded-xl border border-slate-300 px-3 py-2 text-sm focus:outline-none focus:ring-2 focus:ring-indigo-500"
+            placeholder="Search projects or materials\u2026"
+            value={value}
+            onChange={(e)=>onChange(e.target.value)}
+          />
+        </div>
+      );
+    }
+
+    function ProjectCard({ project, onOpen, onDelete, canDelete=false }) {
+      return (
+        <Card className="overflow-hidden hover:shadow-md transition-shadow">
+          <div className="aspect-[16/9] w-full overflow-hidden">
+            <img src={project.cover} alt="cover" className="h-full w-full object-cover" />
+          </div>
+          <div className="p-4 space-y-3">
+            <div className="flex flex-wrap items-start justify-between gap-2">
+              <h2 className="text-base font-semibold text-slate-900">{project.name}</h2>
+              <div className="flex gap-2">{project.tags.map(t => <Chip key={t}>{t}</Chip>)}</div>
+            </div>
+            <p className="text-xs text-slate-500">{project.location}</p>
+            <div className="flex items-center justify-between gap-2">
+              <div className="flex items-center gap-2">
+                <button onClick={()=>onOpen(project)} className="rounded-xl bg-slate-900 px-4 py-2 text-sm text-white hover:bg-slate-800">Open</button>
+                {canDelete && (
+                  <button onClick={onDelete} className="rounded-xl bg-rose-600 px-3 py-2 text-xs font-medium text-white hover:bg-rose-500">Delete</button>
+                )}
+              </div>
+              <span className="text-xs text-slate-500">{project.units.length} unit(s) listed</span>
+            </div>
+          </div>
+        </Card>
+      );
+    }
+
+    // ---------- Auth ----------
+    function AuthPage({ onAuthed }) {
+      const [mode, setMode] = useState('login');
+      return (
+        <div className="min-h-screen bg-slate-50">
+          <header className="border-b border-slate-200 bg-white/70 backdrop-blur">
+            <div className="mx-auto max-w-6xl px-4 py-3 flex items-center justify-between">
+              <div className="rounded-xl bg-slate-900 px-3 py-1.5 text-sm font-semibold text-white">Marketing Vault</div>
+            </div>
+          </header>
+          <main className="mx-auto max-w-md px-4 py-10">
+            <Card className="p-6">
+              <div className="mb-4 flex gap-2">
+                <button onClick={()=>setMode('login')} className={`rounded-xl px-4 py-2 text-sm font-medium ${mode==='login'? 'bg-slate-900 text-white':'bg-white text-slate-700 ring-1 ring-slate-200'}`}>Login</button>
+                <button onClick={()=>setMode('signup')} className={`rounded-xl px-4 py-2 text-sm font-medium ${mode==='signup'? 'bg-slate-900 text-white':'bg-white text-slate-700 ring-1 ring-slate-200'}`}>Sign Up</button>
+              </div>
+              {mode==='login'? <LoginForm onSuccess={onAuthed} /> : <SignupForm onSuccess={onAuthed} />}
+            </Card>
+          </main>
+        </div>
+      );
+    }
+
+    function LoginForm({ onSuccess }) {
+      const [user, setUser] = useState("");
+      const [pass, setPass] = useState("");
+      const [err, setErr] = useState("");
+      async function handle(e){
+        e.preventDefault(); setErr("");
+        try {
+          const resp = await api('/login', { method:'POST', body:{ username: user, password: pass }, auth:false });
+          setToken(resp.token);
+          onSuccess(resp.user);
+        } catch(ex) {
+          setErr(ex.message || 'Login failed');
+        }
+      }
+      return (
+        <form onSubmit={handle} className="space-y-4">
+          <div>
+            <label className="block text-sm text-slate-700 mb-1">Username or Email</label>
+            <input value={user} onChange={(e)=>setUser(e.target.value)} required className="w-full rounded-xl border border-slate-300 px-3 py-2 text-sm" />
+          </div>
+          <div>
+            <label className="block text-sm text-slate-700 mb-1">Password</label>
+            <input type="password" value={pass} onChange={(e)=>setPass(e.target.value)} required className="w-full rounded-xl border border-slate-300 px-3 py-2 text-sm" />
+          </div>
+          {err && <div className="text-sm text-rose-600">{err}</div>}
+          <div className="flex justify-end">
+            <button type="submit" className="rounded-xl bg-indigo-600 px-4 py-2 text-sm font-medium text-white hover:bg-indigo-500">Login</button>
+          </div>
+        </form>
+      );
+    }
+
+    function SignupForm({ onSuccess }) {
+      const [user, setUser] = useState("");
+      const [pass, setPass] = useState("");
+      const [confirm, setConfirm] = useState("");
+      const [err, setErr] = useState("");
+      async function handle(e){
+        e.preventDefault(); setErr("");
+        const username = user.trim();
+        if (!username) return setErr("Enter a username or email.");
+        if (pass.length < 6) return setErr("Use at least 6 characters.");
+        if (pass !== confirm) return setErr("Passwords do not match.");
+        try {
+          const resp = await api('/signup', { method:'POST', body:{ username, password: pass }, auth:false });
+          setToken(resp.token);
+          onSuccess(resp.user);
+        } catch(ex) {
+          setErr(ex.message || 'Signup failed');
+        }
+      }
+      return (
+        <form onSubmit={handle} className="space-y-4">
+          <div>
+            <label className="block text-sm text-slate-700 mb-1">Username or Email</label>
+            <input value={user} onChange={(e)=>setUser(e.target.value)} required className="w-full rounded-xl border border-slate-300 px-3 py-2 text-sm" />
+          </div>
+          <div>
+            <label className="block text-sm text-slate-700 mb-1">Password</label>
+            <input type="password" value={pass} onChange={(e)=>setPass(e.target.value)} required className="w-full rounded-xl border border-slate-300 px-3 py-2 text-sm" />
+          </div>
+          <div>
+            <label className="block text-sm text-slate-700 mb-1">Confirm Password</label>
+            <input type="password" value={confirm} onChange={(e)=>setConfirm(e.target.value)} required className="w-full rounded-xl border border-slate-300 px-3 py-2 text-sm" />
+          </div>
+          {err && <div className="text-sm text-rose-600">{err}</div>}
+          <div className="flex justify-end">
+            <button type="submit" className="rounded-xl bg-indigo-600 px-4 py-2 text-sm font-medium text-white hover:bg-indigo-500">Create Account</button>
+          </div>
+        </form>
+      );
+    }
+
+    function MaterialFolder({ title, items, onAdd }) {
+      const inputId = `picker-${title.split(" ").join("-")}`;
+      return (
+        <Card className="p-4">
+          <div className="flex items-center justify-between">
+            <h4 className="font-medium text-slate-800">{title}</h4>
+            <div className="flex items-center gap-2">
+              <input id={inputId} type="file" multiple accept={ACCEPT[title]||""}
+                     onChange={(e)=>{
+                       const files = Array.from(e.target.files||[]);
+                       if (files.length) onAdd(files);
+                       e.target.value = "";
+                     }} className="hidden" />
+              <label htmlFor={inputId} className="cursor-pointer text-sm text-indigo-600 hover:underline">Add</label>
+            </div>
+          </div>
+          {items.length === 0 ? (
+            <p className="mt-3 text-sm text-slate-500">No items yet.</p>
+          ) : (
+            <ul className="mt-3 space-y-2">
+              {items.map((m, i) => (
+                <li key={`${m.name}-${i}`} className="flex items-center justify-between rounded-lg border border-slate-200 px-3 py-2 text-sm">
+                  <div className="flex items-center gap-2">
+                    <span className="uppercase text-slate-500">{m.type}</span>
+                    <span className="text-slate-800 truncate max-w-[18rem]" title={m.name}>{m.name}</span>
+                  </div>
+                  <a href={m.url} target="_blank" rel="noreferrer" className="text-indigo-600 hover:underline">Open</a>
+                </li>
+              ))}
+            </ul>
+          )}
+        </Card>
+      );
+    }
+
+    function UnitsTable({ units, currency, onOpen }) {
+      const [q, setQ] = useState("");
+      const [beds, setBeds] = useState("all");
+      const filtered = useMemo(() =>
+        units.filter(u =>
+          (beds === "all" || String(u.bedrooms) === beds) &&
+          (u.id.toLowerCase().includes(q.toLowerCase()) || (u.view||"").toLowerCase().includes(q.toLowerCase()))
+        ), [q, beds, units]);
+
+      return (
+        <Card className="p-4">
+          <div className="flex flex-wrap items-center gap-3">
+            <input className="w-full md:w-72 rounded-xl border border-slate-300 px-3 py-2 text-sm"
+                   placeholder="Search unit ID / view" value={q} onChange={(e)=>setQ(e.target.value)} />
+            <select value={beds} onChange={(e)=>setBeds(e.target.value)} className="rounded-xl border border-slate-300 px-3 py-2 text-sm">
+              <option value="all">All bedrooms</option>
+              <option value="1">1 BR</option>
+              <option value="2">2 BR</option>
+              <option value="3">3 BR</option>
+            </select>
+          </div>
+          <div className="mt-4 overflow-x-auto">
+            <table className="min-w-full text-sm">
+              <thead>
+              <tr className="text-left text-slate-500">
+                <th className="px-3 py-2">Unit</th>
+                <th className="px-3 py-2">Beds</th>
+                <th className="px-3 py-2">Area (m\u00B2)</th>
+                <th className="px-3 py-2">View</th>
+                <th className="px-3 py-2">Floor</th>
+                <th className="px-3 py-2">Price</th>
+                <th className="px-3 py-2"></th>
+              </tr>
+              </thead>
+              <tbody>
+              {filtered.map(u => (
+                <tr key={u.id} className="border-t border-slate-200">
+                  <td className="px-3 py-2 font-medium text-slate-900">{u.id}</td>
+                  <td className="px-3 py-2">{u.bedrooms ?? "-"}</td>
+                  <td className="px-3 py-2">{(u.area_m2 ?? 0).toLocaleString()}</td>
+                  <td className="px-3 py-2">{u.view || ""}</td>
+                  <td className="px-3 py-2">{u.floor ?? ""}</td>
+                  <td className="px-3 py-2">{fmtMoney(unitTotalPriceEUR(u), currency)}</td>
+                  <td className="px-3 py-2">
+                    <button onClick={()=>onOpen(u)} className="rounded-lg bg-slate-900 px-3 py-1.5 text-white">Open</button>
+                  </td>
+                </tr>
+              ))}
+              </tbody>
+            </table>
+          </div>
+        </Card>
+      );
+    }
+
+    function UnitDetail({ project, unit, currency }) {
+      const [ccy, setCcy] = useState(currency);
+
+      function downloadPDF() {
+        const { jsPDF } = window.jspdf || {};
+        if (!jsPDF) return alert("PDF library failed to load. Try again.");
+
+        const totalEUR = unitTotalPriceEUR(unit);
+        const price = fmtMoney(totalEUR, ccy);
+        const depositPct = 20, handoverPct = 20, installments = 42;
+        const dep = fmtMoney(totalEUR * depositPct/100, ccy);
+        const hov = fmtMoney(totalEUR * handoverPct/100, ccy);
+        const inst = fmtMoney(totalEUR * (100-depositPct-handoverPct)/100 / installments, ccy);
+
+        const doc = new jsPDF({ unit: "pt", format: "a4" });
+        let y = 48;
+        doc.setFontSize(18); doc.text(`Sales Offer \u2013 ${project.name}`, 48, y); y+=20;
+        doc.setFontSize(11); doc.setTextColor(100); doc.text(project.location||"", 48, y); y+=24;
+        doc.setTextColor(20); doc.setFontSize(13); doc.text("Unit", 48, y); y+=12; doc.setFontSize(11);
+        [
+          ["ID", unit.id],
+          ["Beds", String(unit.bedrooms ?? "-")],
+          ["Area (m\u00B2)", String(unit.area_m2 ?? "")],
+          ["Plot (m\u00B2)", unit.plot_m2 ? String(unit.plot_m2) : ""],
+          ["Floors", unit.floors ? String(unit.floors) : ""],
+          ["Status", unit.status],
+          ["ACD", unit.acd],
+          ["Price", price],
+        ].forEach(([k,v]) => { if(v!==""){ doc.text(`${k}: ${v}`, 60, y); y+=16; }});
+        y+=8; doc.setFontSize(13); doc.text("Payment Plan", 48, y); y+=12; doc.setFontSize(11);
+        doc.text(`Deposit (${depositPct}%): ${dep}`, 60, y); y+=14;
+        doc.text(`${installments} installments: ${inst} each`, 60, y); y+=14;
+        doc.text(`Handover (${handoverPct}%): ${hov}`, 60, y); y+=18;
+        doc.text(`Total: ${price}`, 60, y); y+=22;
+        doc.setTextColor(120); doc.setFontSize(9);
+        doc.text("* Figures indicative. Subject to final SPA/price sheet.", 48, y);
+        doc.save(`Sales_Offer_${unit.id}_${ccy}.pdf`);
+      }
+
+      return (
+        <Card className="p-5">
+          <div className="flex flex-col gap-4 md:flex-row md:items-start md:justify-between">
+            <div>
+              <h3 className="text-lg font-semibold text-slate-900">{unit.id}</h3>
+              <p className="text-sm text-slate-500">{project.name}</p>
+            </div>
+            <div className="flex items-center gap-2">
+              <label className="text-sm text-slate-600">Currency</label>
+              <select value={ccy} onChange={(e)=>setCcy(e.target.value)} className="rounded-lg border border-slate-300 px-3 py-2 text-sm">
+                {Object.keys(currencies).map(k => <option key={k} value={k}>{k}</option>)}
+              </select>
+              <button onClick={downloadPDF} className="rounded-xl bg-indigo-600 px-4 py-2 text-sm font-medium text-white hover:bg-indigo-500">
+                Download Sales Offer (PDF)
+              </button>
+            </div>
+          </div>
+
+          <div className="mt-4 grid grid-cols-1 gap-3 md:grid-cols-2">
+            <Spec label="Bedrooms" value={`${unit.bedrooms ?? "-"}`} />
+            <Spec label="Area (gross)" value={`${(unit.area_m2 ?? 0).toLocaleString()} m\u00B2`} />
+            {unit.plot_m2 && <Spec label="Plot" value={`${unit.plot_m2} m\u00B2`} />}
+            {unit.floors && <Spec label="Floors" value={`${unit.floors}`} />}
+            {unit.terraces_m2 != null && <Spec label="Terraces" value={`${unit.terraces_m2} m\u00B2`} />}
+            {unit.green_terrace_m2 != null && <Spec label="Green Terrace" value={`${unit.green_terrace_m2} m\u00B2`} />}
+            <Spec label="Price / m\u00B2" value={fmtMoney(unit.price_per_m2_eur, ccy)} />
+            <Spec label="Total Price" value={fmtMoney(unitTotalPriceEUR(unit), ccy)} />
+            <Spec label="Status" value={unit.status} />
+            <Spec label="ACD" value={unit.acd} />
+          </div>
+        </Card>
+      );
+    }
+
+    const Spec = ({label, value}) =>
+      <div className="rounded-xl border border-slate-200 p-3">
+        <div className="text-xs uppercase tracking-wide text-slate-500">{label}</div>
+        <div className="text-sm font-medium text-slate-900">{value}</div>
+      </div>;
+
+    // ---------- Root ----------
+    function App() {
+      const [search, setSearch] = useState("");
+      const [data, setData] = useState([]);
+      const [projId, setProjId] = useState(null);
+      const [tab, setTab] = useState("materials");
+      const [currency, setCurrency] = useState("EUR");
+      const [unitOpen, setUnitOpen] = useState(null);
+      const [cmsOpen, setCmsOpen] = useState(false);
+      const [currentUser, setCurrentUser] = useState(null);
+      const [loading, setLoading] = useState(true);
+      const [error, setError] = useState("");
+
+      // On mount: fetch current user (if token) and projects
+      useEffect(() => {
+        (async () => {
+          setLoading(true); setError("");
+          try {
+            if (IS_DEMO) {
+              // Demo: no backend. Show seeded projects and a demo user.
+              setCurrentUser({ username: 'demo' });
+              setData(seedProjects);
+              return;
+            }
+            // try get me
+            const token = getToken();
+            if (token) {
+              try { const me = await api('/me'); setCurrentUser(me.user); } catch(_) { clearToken(); setCurrentUser(null); }
+            }
+            // fetch projects (public)
+            const resp = await api('/projects', { auth:false });
+            setData(resp.projects || []);
+          } catch(ex) {
+            setError('Failed to load from API. Is the server running?');
+            setData([]);
+          } finally {
+            setLoading(false);
+          }
+        })();
+      }, []);
+
+      const projects = useMemo(() => {
+        const q = search.toLowerCase();
+        return data.filter(p => p.name.toLowerCase().includes(q) || p.location.toLowerCase().includes(q));
+      }, [search, data]);
+      const proj = useMemo(() => data.find(p => p.id === projId) || null, [data, projId]);
+
+      function handleAddMaterial(folder, files) {
+        if (!proj) return;
+        const addItems = files.map(f => ({ name: f.name, type: fileType(f), url: URL.createObjectURL(f) }));
+        setData(prev => prev.map(p => p.id !== proj.id ? p : {
+          ...p, materials: { ...p.materials, [folder]: [ ...(p.materials[folder]||[]), ...addItems ] }
+        }));
+      }
+
+      function addProjectViaCMS({ name, location, cover, tags }) {
+        (async () => {
+          try {
+            if (IS_DEMO) {
+              // Local-only create
+              const base = slugify(name) || `project-${Date.now().toString(36)}`;
+              const exists = new Set(data.map(p=>p.id));
+              let id = base, n=1; while (exists.has(id)) id = `${base}-${n++}`;
+              const newProj = { id, name, location, cover, tags: (tags||'').split(',').map(s=>s.trim()).filter(Boolean), materials: defaultMaterials(), units: [], userCreated:true };
+              setData(prev => [newProj, ...prev]);
+              setProjId(null);
+              setCmsOpen(false);
+              return;
+            }
+            const body = { name, location, cover, tags };
+            const resp = await api('/projects', { method:'POST', body });
+            const newProj = resp.project;
+            setData(prev => [newProj, ...prev]);
+            setProjId(null);
+            setCmsOpen(false);
+          } catch(ex) {
+            alert(ex.message || 'Failed to create project');
+          }
+        })();
+      }
+
+      function deleteProject(id) {
+        if (!confirm('Delete this project?')) return;
+        (async () => {
+          try {
+            if (IS_DEMO) {
+              setData(prev => prev.filter(p => p.id !== id));
+              if (projId === id) setProjId(null);
+              return;
+            }
+            await api(`/projects/${id}`, { method:'DELETE' });
+            setData(prev => prev.filter(p => p.id !== id));
+            if (projId === id) setProjId(null);
+          } catch(ex) {
+            alert(ex.message || 'Failed to delete project');
+          }
+        })();
+      }
+
+      // Gate the app behind auth
+      if (loading) {
+        return <div className="min-h-screen grid place-items-center text-slate-600">Loading…</div>;
+      }
+      if (!currentUser) {
+        return IS_DEMO
+          ? <div className="min-h-screen grid place-items-center text-slate-600">Preparing demo…</div>
+          : <AuthPage onAuthed={(u)=>{ setCurrentUser(u); }} />;
+      }
+
+      return (
+        <div className="min-h-screen bg-slate-50">
+          <header className="sticky top-0 z-10 border-b border-slate-200 bg-white/70 backdrop-blur">
+            <div className="mx-auto max-w-6xl px-4 py-3 flex flex-wrap items-center justify-between gap-3">
+              <div className="flex items-center gap-3">
+                <div className="rounded-xl bg-slate-900 px-3 py-1.5 text-sm font-semibold text-white">Marketing Vault</div>
+                <div className="hidden md:block text-slate-400">A unified library for your projects</div>
+              </div>
+              <div className="flex items-center gap-2">
+                <Toolbar value={search} onChange={setSearch} />
+                <select value={currency} onChange={(e)=>setCurrency(e.target.value)} className="rounded-xl border border-slate-300 px-3 py-2 text-sm">
+                  {Object.keys(currencies).map(k => <option key={k} value={k}>{k}</option>)}
+                </select>
+                <button onClick={()=>setCmsOpen(true)} className="rounded-xl bg-indigo-600 px-3 py-2 text-sm font-medium text-white hover:bg-indigo-500">Add Project</button>
+                {currentUser && (
+                  <div className="ml-2 flex items-center gap-2">
+                    <span className="text-sm text-slate-600">{currentUser.username}</span>
+                    <button onClick={()=>{ clearToken(); setCurrentUser(null); }} className="rounded-xl px-3 py-2 text-sm ring-1 ring-slate-300 text-slate-700">Logout</button>
+                  </div>
+                )}
+              </div>
+            </div>
+          </header>
+
+          <main className="mx-auto max-w-6xl px-4 py-6">
+            {!proj && (
+              <div className="grid grid-cols-1 gap-6 md:grid-cols-2">
+                {projects.map(p => (
+                  <ProjectCard
+                    key={p.id}
+                    project={p}
+                    onOpen={(pr)=>{setProjId(pr.id); setUnitOpen(null);}}
+                    onDelete={()=> deleteProject(p.id)}
+                    canDelete={!!p.userCreated}
+                  />
+                ))}
+              </div>
+            )}
+
+            {proj && (
+              <div className="space-y-6">
+                <button onClick={()=>setProjId(null)} className="text-sm text-indigo-600 hover:underline">\u2190 Back to projects</button>
+                <div className="grid grid-cols-1 gap-6 md:grid-cols-3">
+                  <Card className="overflow-hidden md:col-span-1">
+                    <img src={proj.cover} alt="cover" className="h-48 w-full object-cover" />
+                    <div className="p-4 space-y-2">
+                      <h2 className="text-lg font-semibold text-slate-900">{proj.name}</h2>
+                      <p className="text-sm text-slate-500">{proj.location}</p>
+                      <div className="flex flex-wrap gap-2 pt-1">{proj.tags.map(t => <Chip key={t}>{t}</Chip>)}</div>
+                      {proj.userCreated && (
+                        <div className="pt-2">
+                          <button onClick={()=>deleteProject(proj.id)} className="rounded-xl bg-rose-600 px-3 py-2 text-sm font-medium text-white hover:bg-rose-500">Delete Project</button>
+                        </div>
+                      )}
+                    </div>
+                  </Card>
+
+                  <div className="md:col-span-2 space-y-4">
+                    <nav className="flex gap-2">
+                      {[
+                        { id: "materials", label: "Materials" },
+                        { id: "units", label: `Units (${proj.units.length})` },
+                      ].map(t => (
+                        <button key={t.id}
+                                onClick={()=>{setTab(t.id); setUnitOpen(null);}}
+                                className={`rounded-xl px-4 py-2 text-sm font-medium ${tab===t.id?"bg-slate-900 text-white":"bg-white text-slate-700 ring-1 ring-slate-200"}`}>
+                          {t.label}
+                        </button>
+                      ))}
+                    </nav>
+
+                    {tab === "materials" && (
+                      <div className="grid grid-cols-1 gap-4 md:grid-cols-2">
+                        {Object.entries(proj.materials).map(([folder, items]) => (
+                          <MaterialFolder key={folder} title={folder} items={items}
+                                          onAdd={(files)=>handleAddMaterial(folder, files)} />
+                        ))}
+                      </div>
+                    )}
+
+                    {tab === "units" && !unitOpen && (
+                      <UnitsTable units={proj.units} currency={currency} onOpen={setUnitOpen} />
+                    )}
+
+                    {tab === "units" && unitOpen && (
+                      <div className="space-y-4">
+                        <button onClick={()=>setUnitOpen(null)} className="text-sm text-indigo-600 hover:underline">\u2190 Back to units</button>
+                        <UnitDetail project={proj} unit={unitOpen} currency={currency} />
+                      </div>
+                    )}
+                  </div>
+                </div>
+              </div>
+            )}
+          </main>
+
+          <footer className="mx-auto max-w-6xl px-4 py-8 text-center text-xs text-slate-500">
+            {"\u00A9"} {new Date().getFullYear()} Smart Project {"\u2013"} Marketing Vault (Prototype)
+          </footer>
+
+          <Modal open={cmsOpen} onClose={()=>setCmsOpen(false)} title="Add Project (CMS)">
+            <ProjectForm onSubmit={addProjectViaCMS} onCancel={()=>setCmsOpen(false)} />
+          </Modal>
+        </div>
+      );
+    }
+
+    ReactDOM.createRoot(document.getElementById("root")).render(<App />);
+  </script>
+</body>
+</html>
