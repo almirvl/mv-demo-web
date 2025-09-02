@@ -20,7 +20,7 @@
   <!-- jsPDF (for real PDF export) -->
   <script src="https://cdn.jsdelivr.net/npm/jspdf@2.5.1/dist/jspdf.umd.min.js"></script>
 
-  <script>window.DEMO_REQUIRE_LOGIN=true;</script>`n  <script type="text/babel" data-presets="env,react">
+  <script>window.ADMIN_REQUEST_EMAIL="";</script>`n  <script type="text/babel" data-presets="env,react">
     const { useState, useMemo, useEffect } = React;
 
     // ---------- Helpers ----------
@@ -242,6 +242,7 @@
     // ---------- Auth ----------
     function AuthPage({ onAuthed, demoLocked=false }) {
       const [mode, setMode] = useState('login');
+      const [accessOpen, setAccessOpen] = useState(false);
       return (
         <div className="min-h-screen bg-slate-50">
           <header className="border-b border-slate-200 bg-white/70 backdrop-blur">
@@ -257,14 +258,15 @@
                   <button onClick={()=>setMode('signup')} className={`rounded-xl px-4 py-2 text-sm font-medium ${mode==='signup'? 'bg-slate-900 text-white':'bg-white text-slate-700 ring-1 ring-slate-200'}`}>Sign Up</button>
                 )}
               </div>
-              {mode==='login'? <LoginForm onSuccess={onAuthed} demoLocked={demoLocked} /> : <SignupForm onSuccess={onAuthed} />}
+              {mode==='login'? <LoginForm onSuccess={onAuthed} demoLocked={demoLocked} onRequestAccess={()=>setAccessOpen(true)} /> : <SignupForm onSuccess={onAuthed} />}
             </Card>
+            <RequestAccessModal open={accessOpen} onClose={()=>setAccessOpen(false)} />
           </main>
         </div>
       );
     }
 
-    function LoginForm({ onSuccess, demoLocked=false }) {
+    function LoginForm({ onSuccess, demoLocked=false, onRequestAccess }) {
       const [user, setUser] = useState("");
       const [pass, setPass] = useState("");
       const [err, setErr] = useState("");
@@ -300,6 +302,9 @@
           )}
           <div className="flex justify-end">
             <button type="submit" className="rounded-xl bg-indigo-600 px-4 py-2 text-sm font-medium text-white hover:bg-indigo-500">Login</button>
+          </div>
+          <div className="text-center">
+            <button type="button" onClick={onRequestAccess} className="text-sm text-indigo-600 hover:underline">Request access</button>
           </div>
         </form>
       );
@@ -352,6 +357,50 @@
             <button type="submit" className="rounded-xl bg-indigo-600 px-4 py-2 text-sm font-medium text-white hover:bg-indigo-500">Create Account</button>
           </div>
         </form>
+      );
+    }
+
+    function RequestAccessModal({ open, onClose }) {
+      const [email, setEmail] = useState("");
+      const [err, setErr] = useState("");
+      const [ok, setOk] = useState("");
+      async function submit(e) {
+        e.preventDefault(); setErr(""); setOk("");
+        const em = email.trim();
+        if (!/.+@.+\..+/.test(em)) { setErr('Enter a valid email'); return; }
+        try {
+          if (!API_BASE) {
+            if (ADMIN_REQUEST_EMAIL) {
+              const subj = encodeURIComponent('Request access');
+              const body = encodeURIComponent(`Please grant access to ${em}.`);
+              window.location.href = `mailto:${ADMIN_REQUEST_EMAIL}?subject=${subj}&body=${body}`;
+              setOk('Opened email client to request access.');
+            } else {
+              setErr('Online demo cannot send requests. Provide ADMIN_REQUEST_EMAIL or connect a backend.');
+            }
+            return;
+          }
+          await api('/request-access', { method:'POST', body:{ email: em }, auth:false });
+          setOk('If eligible, credentials and a verification link have been emailed.');
+        } catch (ex) {
+          setErr(ex.message || 'Failed to request access');
+        }
+      }
+      return (
+        <Modal open={open} onClose={onClose} title="Request Access">
+          <form onSubmit={submit} className="space-y-3">
+            <div>
+              <label className="block text-sm text-slate-700 mb-1">Your email</label>
+              <input type="email" value={email} onChange={(e)=>setEmail(e.target.value)} required className="w-full rounded-xl border border-slate-300 px-3 py-2 text-sm" placeholder="you@example.com" />
+            </div>
+            {err && <div className="text-sm text-rose-600">{err}</div>}
+            {ok && <div className="text-sm text-emerald-700">{ok}</div>}
+            <div className="flex justify-end gap-2">
+              <button type="button" onClick={onClose} className="rounded-xl px-4 py-2 text-sm ring-1 ring-slate-300 text-slate-700">Cancel</button>
+              <button type="submit" className="rounded-xl bg-slate-900 px-4 py-2 text-sm text-white">Send request</button>
+            </div>
+          </form>
+        </Modal>
       );
     }
 
